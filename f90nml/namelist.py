@@ -692,6 +692,55 @@ class Namelist(OrderedDict):
         for grp_name, grp_vars in sel.items():
             self._write_nmlgrp(grp_name, grp_vars, nml_file, sort)
 
+    def get_shape(self,grp_name,v_name):
+        for gname,grp_vars in self.items():
+            if grp_name.lower()!=gname: continue
+            for vname,v_val in grp_vars.items():
+                if v_name.lower()!=vname: continue
+                v_start = grp_vars.start_index.get(v_name, None)
+                indices=[]
+                for v_indices in self._var_indices(v_name, v_val, v_start=v_start):
+                    if isinstance(v_indices,list):
+                        indices+=[v_indices]
+                    else:
+                        indices+=[v_indices]
+                indices=flatten(indices)
+                if not indices: return ()
+                mx_current=indices[0]
+                print(indices)
+                for ix in indices:
+                    mx_current=[max(mx_current[i],x) for i,x in enumerate(ix)]
+        return tuple(mx_current)
+
+    def get_indices(self,grp_name,v_name):
+        indices=None
+        for gname,grp_vars in self.items():
+            if grp_name.lower()!=gname: continue
+            for vname,v_val in grp_vars.items():
+                if v_name.lower()!=vname: continue
+                v_start = grp_vars.start_index.get(v_name, None)
+                indices=[]
+                for v_indices in self._var_indices(v_name, v_val, v_start=v_start):
+                    if isinstance(v_indices,list):
+                        indices+=[v_indices]
+                    else:
+                        indices+=[v_indices]
+
+                indices=flatten(indices)
+        return indices
+
+    def get_var(self,grp_name,v_name):
+        import numpy
+        indices=self.get_indices(grp_name,v_name)
+        shape=self.get_shape(grp_name,v_name)
+        if not shape: return self[grp_name][v_name]
+        values=flatten1(self[grp_name][v_name])
+        varray=numpy.empty(shape=shape)
+        for i,idx in enumerate(indices):
+            ix=tuple([x-1 for x in idx])
+            varray[ix]=values[i]
+        return varray
+
     def _write_nmlgrp(self, grp_name, grp_vars, nml_file, sort=False):
         """Write namelist group to target file."""
         if self._newline:
@@ -715,7 +764,107 @@ class Namelist(OrderedDict):
 
         print('/', file=nml_file)
 
-    def _var_strings(self, v_name, v_values, v_idx=None, v_start=None):
+    def _var_indices(self, v_name, v_values, v_idx=None, v_start=None):
+        """Return list of variable indices in same order as stored values."""
+
+        var_strs = []
+
+        # Parse a multidimensional array
+        if is_nullable_list(v_values, list):
+            if not v_idx:
+                v_idx = []
+
+            i_s = v_start[::-1][len(v_idx)] if v_start else None
+
+            # FIXME: We incorrectly assume 1-based indexing if it is
+            # unspecified.  This is necessary because our output method always
+            # separates the outer axes to one per line.  But we cannot do this
+            # if we don't know the first index (which we are no longer assuming
+            # to be 1-based elsewhere).  Unfortunately, the solution needs a
+            # rethink of multidimensional output.
+
+            # NOTE: Fixing this would also clean up the output of todict(),
+            # which is now incorrectly documenting unspecified indices as 1.
+
+            # For now, we will assume 1-based indexing here, just to keep
+            # things working smoothly.
+            if i_s is None:
+                i_s = 1
+
+            for idx, val in enumerate(v_values, start=i_s):
+                v_idx_new = v_idx + [idx]
+                v_strs = self._var_indices(v_name, val, v_idx=v_idx_new,
+                                           v_start=v_start)
+                var_strs.append(v_strs)
+
+        # Parse derived type contents
+        elif isinstance(v_values, Namelist):
+            for f_name, f_vals in v_values.items():
+                v_title = '%'.join([v_name, f_name])
+
+                v_start_new = v_values.start_index.get(f_name, None)
+
+                v_strs = self._var_indices(v_title, f_vals,
+                                           v_start=v_start_new)
+                var_strs.append(v_strs)
+
+        # Parse an array of derived types
+        elif is_nullable_list(v_values, Namelist):
+            if not v_idx:
+                v_idx = []
+
+            i_s = v_start[::-1][len(v_idx)] if v_start else 1
+
+            for idx, val in enumerate(v_values, start=i_s):
+
+                # Skip any empty elements in a list of derived types
+                if val is None:
+                    continue
+
+                v_strs = self._var_indices(v_title, val)
+                var_strs.append(v_strs)
+
+        else:
+            use_default_start_index = False
+            if not isinstance(v_values, list):
+                v_values = [v_values]
+                use_default_start_index = False
+            else:
+                use_default_start_index = self.default_start_index is not None
+
+            # Print the index range
+
+            # TODO: Include a check for len(v_values) to determine if vector
+            v_idx_repr=[]
+            if v_idx or v_start or use_default_start_index:
+
+                if v_start or use_default_start_index:
+                    if v_start:
+                        i_s = v_start[0]
+                    else:
+                        i_s = self.default_start_index
+
+                    if i_s is not None:
+                        i_e = i_s + len(v_values) - 1
+
+                        v_idx_repr += [i_s]
+                else:
+                    v_idx_repr += []
+
+                if not v_idx: v_idx=[]
+                init_indices=v_idx_repr.copy()
+                v_idx_repr=[]
+                for j,v in enumerate(v_values):
+                    final_idx=init_indices.copy()
+                    final_idx[0]=final_idx[0]+j
+                    final_idx+=[i for i in v_idx[::-1]]
+                    v_idx_repr.append(final_idx)
+
+                var_strs=v_idx_repr.copy()
+
+        return var_strs
+
+    def _var_strings(self, v_name, v_values, v_idx=None, v_start=None, indices=False):
         """Convert namelist variable to list of fixed-width strings."""
         if self.uppercase:
             v_name = v_name.upper()
@@ -1105,3 +1254,33 @@ def is_nullable_list(val, vtype):
     return (isinstance(val, list) and
             any(isinstance(v, vtype) for v in val) and
             all((isinstance(v, vtype) or v is None) for v in val))
+
+
+def flatten(L):
+    """Flatten list of nested lists to list of lists."""
+    res=[]
+    if isinstance(L,list):
+        for l in L:
+            if isinstance(l,list):
+                if isinstance(l[0],list):
+                    res+=flatten(l)
+                else:
+                    res+=[l]
+            else:
+                res+=[l]
+    else:
+        res=L.copy()
+    return res
+
+def flatten1(L):
+    """Flatten list of nested lists to single list of values."""
+    res=[]
+    if isinstance(L,list):
+        for l in L:
+            if isinstance(l,list):
+                res+=flatten1(l)
+            else:
+                res+=[l]
+    else:
+        res=L.copy()
+    return res
