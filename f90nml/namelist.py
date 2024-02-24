@@ -692,7 +692,28 @@ class Namelist(OrderedDict):
         for grp_name, grp_vars in sel.items():
             self._write_nmlgrp(grp_name, grp_vars, nml_file, sort)
 
-    def get_shape(self,grp_name,v_name):
+    def get_shape(self,*args):
+        if len(args)==2: return self._get_shape2(*args)
+        elif len(args)==1: return self._get_shape1(*args)
+
+    def _get_shape1(self,v_name):
+        for vname,v_val in self.items():
+            if v_name.lower()!=vname: continue
+            v_start = self.start_index.get(v_name, None)
+            indices=[]
+            for v_indices in self._var_indices(v_name, v_val, v_start=v_start):
+                if isinstance(v_indices,list):
+                    indices+=[v_indices]
+                else:
+                    indices+=[v_indices]
+            indices=flatten(indices)
+            if not indices: return ()
+            mx_current=indices[0]
+            for ix in indices:
+                mx_current=[max(mx_current[i],x) for i,x in enumerate(ix)]
+        return tuple(mx_current)
+
+    def _get_shape2(self,grp_name,v_name):
         for gname,grp_vars in self.items():
             if grp_name.lower()!=gname: continue
             for vname,v_val in grp_vars.items():
@@ -707,12 +728,15 @@ class Namelist(OrderedDict):
                 indices=flatten(indices)
                 if not indices: return ()
                 mx_current=indices[0]
-                print(indices)
                 for ix in indices:
                     mx_current=[max(mx_current[i],x) for i,x in enumerate(ix)]
         return tuple(mx_current)
 
-    def get_indices(self,grp_name,v_name):
+    def get_indices(self,*args):
+        if len(args)==2: return self._get_indices2(*args)
+        elif len(args)==1: return self._get_indices1(*args)
+
+    def _get_indices2(self,grp_name,v_name):
         indices=None
         for gname,grp_vars in self.items():
             if grp_name.lower()!=gname: continue
@@ -729,13 +753,49 @@ class Namelist(OrderedDict):
                 indices=flatten(indices)
         return indices
 
-    def get_var(self,grp_name,v_name):
+    def _get_indices1(self,v_name):
+        indices=None
+        for vname,v_val in self.items():
+            if v_name.lower()!=vname: continue
+            v_start = self.start_index.get(v_name, None)
+            indices=[]
+            for v_indices in self._var_indices(v_name, v_val, v_start=v_start):
+                if isinstance(v_indices,list):
+                    indices+=[v_indices]
+                else:
+                    indices+=[v_indices]
+
+            indices=flatten(indices)
+        return indices
+
+    def get_var(self,*args):
+        import numpy
+        if len(args)==2:
+            return self._get_var2(*args)
+        elif len(args)==1:
+            return self._get_var1(*args)
+
+    def _get_var1(self,v_name):
+        import numpy
+        indices=self.get_indices(v_name)
+        shape=self.get_shape(v_name)
+        if not shape: return self[v_name]
+        values=flatten1(self[v_name])
+        varray=numpy.empty(shape=shape)
+        varray.fill(numpy.nan)
+        for i,idx in enumerate(indices):
+            ix=tuple([x-1 for x in idx])
+            varray[ix]=values[i]
+        return varray
+
+    def _get_var2(self,grp_name,v_name):
         import numpy
         indices=self.get_indices(grp_name,v_name)
         shape=self.get_shape(grp_name,v_name)
         if not shape: return self[grp_name][v_name]
         values=flatten1(self[grp_name][v_name])
         varray=numpy.empty(shape=shape)
+        varray.fill(numpy.nan)
         for i,idx in enumerate(indices):
             ix=tuple([x-1 for x in idx])
             varray[ix]=values[i]
